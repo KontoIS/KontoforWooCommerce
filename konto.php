@@ -2,7 +2,7 @@
 
 /*
   Plugin Name: WooCommerce Konto Checkout plugin
-  Plugin URI: https://konto.is/
+  Plugin URI: http://wcplugin.konto.is/
   Description: Extends WooCommerce with Konto Checkout plugin.
   Version: 1.0.0
   Author: Konto
