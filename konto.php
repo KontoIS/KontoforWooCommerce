@@ -63,6 +63,69 @@ function woocommerce_konto_gateway_init() {
 			return $icon;
 		}
 	}
+	
+	function add_action_to_order( $actions, $order ) {
+		if ( $order->has_status( array('processing' ) ) && $order->payment_method != 'konto' && !empty($order->billing_ssn)) {
+			$invoice = get_post_meta($order->id,'konto_invoice',true);
+			if (!$invoice)
+			{
+				$actions['name'] = array(
+					'url'  => admin_url( 'admin-ajax.php?action=create_invoice&order_id=' . $order->id ),
+					'name' => 'Konto',
+				);
+			}
+		}
+		return $actions;
+	}
+	
+	function create_invoice() {
+		$order  = wc_get_order( absint( $_GET['order_id'] ) );
+		
+		if ( $order ) {
+			if ( $order->has_status( array('processing' ) ) && $order->payment_method != 'konto' && !empty($order->billing_ssn)) {
+				$gateway = new WC_Gateway_Konto();
+				try {
+					$result = $gateway->process_payment($_GET['order_id'],0,true,true);
+					
+					update_post_meta($_GET['order_id'],'konto_invoice',$result['result']);
+				}
+				catch (Exception $e)
+				{
+					if(!session_id()) {
+						session_start();
+					}
+					$_SESSION['konto_error_message'] = $e->getMessage();
+				}
+			}
+		}
+		
+		wp_safe_redirect( wp_get_referer() ? wp_get_referer() : admin_url( 'edit.php?post_type=shop_order' ) );
+		exit;
+	}
+	
+	function konto_admin_notice_error() {
+		if(!session_id()) {
+			session_start();
+		}
+		
+		if (isset($_SESSION['konto_error_message'])):
+		?>
+	    <div class="notice notice-error">
+	        <p><?php echo WC()->session->get('konto_error_message'); ?></p>
+	    </div>
+	    <?php
+	    unset($_SESSION['konto_error_message']);
+	    endif;
+	}
+	
+	$settings = get_settings('woocommerce_konto_settings',null);
+	if ($settings['enabled'] == 'yes')
+	{
+		add_filter( 'woocommerce_admin_order_actions', 'add_action_to_order',10,2);	
+		add_action( 'wp_ajax_create_invoice', 'create_invoice' );
+		
+		add_action( 'admin_notices', 'konto_admin_notice_error' );
+	}
     
     class WC_Gateway_Konto extends WC_Payment_Gateway {
     	public static $log_enabled = false;
@@ -131,8 +194,7 @@ function woocommerce_konto_gateway_init() {
             return true;
         }
     	
-    	public function process_payment( $order_id ) {
-    		global $woocommerce;
+    	public function process_payment( $order_id ,$is_claim = true, $is_mark_paid = false, $is_return= false) {   		
     		$order = new WC_Order( $order_id );
     		
     		$url = 'https://konto.is';
@@ -203,8 +265,9 @@ function woocommerce_konto_gateway_init() {
     			'due_date' => date('Y-m-d',strtotime('+5 days')),
     			'issue_date' => date('Y-m-d'),
     			'type' => 'invoice',
-    			'is_claim' => 1,
-    			'items' => $items
+    			'is_claim' => $is_claim,
+    			'items' => $items,
+    			'mark_paid' => $is_mark_paid
     		);
     		self::log("Start create invoice");
     		self::log(array_merge(array('username' => $this->_username,'api_key' => $this->_api_key),$invoice_data));
@@ -214,38 +277,43 @@ function woocommerce_konto_gateway_init() {
     			'data' => json_encode($invoice_data)
     		);
     		
-    		$ch = curl_init($url.'/api/v1/create-invoice');
-    		curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "POST");
-    		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    		curl_setopt($ch, CURLOPT_POSTFIELDS,$query = http_build_query($data, '', '&'));
-    		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
-    		$result = curl_exec($ch);
+    		$response = wp_remote_post( $url.'/api/v1/create-invoice', array(
+	    		'method' => 'POST',
+	    		'timeout' => 45,
+	    		'redirection' => 5,
+	    		'httpversion' => '1.0',
+	    		'blocking' => true,
+	    		'headers' => array(),
+	    		'body' => $data,
+	    		'cookies' => array()
+    		)
+    		);
     		
-    		if ($result === FALSE)
-    		{
-    			self::log('Result: '.curl_error($ch));
-    			throw new Exception( 'Error connect server');
-    		}
-    		else
-    		{
-    			self::log('Result: '.$result);
-    			$result = json_decode($result,true);
+    		if ( is_wp_error( $response ) ) {
+    			$error_message = $response->get_error_message();
+    			self::log($error_message);
+    			throw new Exception( $error_message);
+    		} else {
+    			self::log($response['body']);
+    			
+    			$result = json_decode($response['body'],true);
     			if (json_last_error() !== JSON_ERROR_NONE)
     			{
     				throw new Exception( 'Error connect server');
     			}
     		}
-    		curl_close($ch);  // Seems like good practice
     		
     		if (!$result['status'])		
     			throw new Exception( $result['message']);
     		
     		// Return thankyou redirect
-    		if ($this->_mark)
+    		if ($this->_mark && !$is_return)
     		{
     			$order->update_status('processing');
     		}
-    			
+    		if ($is_return)
+    			return $result;
+    		
     		return array(
     			'result' => 'success',
     			'redirect' => $this->get_return_url( $order )
