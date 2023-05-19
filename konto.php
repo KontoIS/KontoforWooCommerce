@@ -4,13 +4,13 @@
   Plugin Name: WooCommerce Konto Checkout plugin
   Plugin URI: http://wcplugin.konto.is/
   Description: Extends WooCommerce with Konto Checkout plugin.
-  Version: 1.0.0
+  Version: 1.1.0
   Author: Konto
   Author URI: https://konto.is/
  */
 define( 'KONTO_DIR', plugin_dir_path( __FILE__ ) );
 define( 'KONTO_URL', plugin_dir_url( __FILE__ ) );
-define( 'KONTO_VERSION', '1.0.0' );
+define( 'KONTO_VERSION', '1.1.0' );
  
 add_action('plugins_loaded', 'woocommerce_konto_gateway_init', 0);
 function woocommerce_konto_gateway_init() {
@@ -55,8 +55,8 @@ function woocommerce_konto_gateway_init() {
 	}
 		
 	//Modify icon size only for this gateway
-	add_filter( 'woocommerce_gateway_icon', 'authorize_gateway_icon', 10, 2);
-	function authorize_gateway_icon( $icon, $id ) {
+	add_filter( 'woocommerce_gateway_icon', 'konto_authorize_gateway_icon', 10, 2);
+	function konto_authorize_gateway_icon( $icon, $id ) {
 		if ( strlen($id) >= 9 && substr($id, 0, 9) === 'konto' ) {
 			return '<div style="width: 200px;">' . $icon . '</div>'; 
 		} else {
@@ -64,15 +64,56 @@ function woocommerce_konto_gateway_init() {
 		}
 	}
 	
+	function konto_get_woo_version_number() {
+		// If get_plugins() isn't available, require it
+		if ( ! function_exists( 'get_plugins' ) )
+			require_once( ABSPATH . 'wp-admin/includes/plugin.php' );
+			
+			// Create the plugins folder and file variables
+			$plugin_folder = get_plugins( '/' . 'woocommerce' );
+			$plugin_file = 'woocommerce.php';
+			
+			// If the plugin version number is set, return it
+			if ( isset( $plugin_folder[$plugin_file]['Version'] ) ) {
+				return $plugin_folder[$plugin_file]['Version'];
+				
+			} else {
+				// Otherwise return null
+				return NULL;
+			}
+	}
+	
 	function add_action_to_order( $actions, $order ) {
 		if ( $order->has_status( array('processing' ) ) && $order->payment_method != 'konto' && !empty($order->billing_ssn)) {
 			$invoice = get_post_meta($order->id,'konto_invoice',true);
 			if (!$invoice)
 			{
-				$actions['name'] = array(
-					'url'  => admin_url( 'admin-ajax.php?action=create_invoice&order_id=' . $order->id ),
-					'name' => 'Konto',
-				);
+				$version = konto_get_woo_version_number();
+				$check = true;
+				if ($version)
+				{
+					$array = explode('.', $version);
+					if (isset($array['0']) && isset($array['1']) && $array['0'] >= 3 && $array['1'] >= 3)
+					{
+						$check = false;
+					}
+				}
+				
+				if ($check)
+				{
+					$actions['name'] = array(
+						'url'  => admin_url( 'admin-ajax.php?action=create_invoice&order_id=' . $order->id ),
+						'name' => 'Konto',
+					);
+				}
+				else
+				{
+					$actions['konto'] = array(
+						'url'  => admin_url( 'admin-ajax.php?action=create_invoice&order_id=' . $order->id ),
+						'name' => 'Konto',
+						'action'    => "action complete"
+					);
+				}
 			}
 		}
 		return $actions;
@@ -205,10 +246,12 @@ function woocommerce_konto_gateway_init() {
     		}
     		$items = $order->get_items();
     		$tmp = array();
+    		$amount_without_ship = 0;
     		foreach ($items as $item_id=> $item)
     		{
     			$taxs = WC_Tax::get_rates($item['tax_class']);
-    			$price = WC_Abstract_Order::get_line_total( $item, true)/$item['quantity'];
+    			$price = $order->get_line_total( $item, true)/$item['quantity'];
+    			$amount_without_ship += $order->get_line_total( $item, true);
     			$tax_name = 'Z';
     			if (isset($taxs[key($taxs)]['rate']))
     			{
@@ -240,6 +283,18 @@ function woocommerce_konto_gateway_init() {
     					'uom' => 'C62',
     					'tax' => $tax_name,
     					'unit_price' => $price
+    			);
+    		}
+    		$ship = $order->get_total() - $amount_without_ship;
+    		if ( $ship > 0)
+    		{
+    			$tmp[] = array(
+    				'item_number' => $item_id++,
+    				'description' => 'Ship',
+    				'qty' => 1,
+    				'uom' => 'C62',
+    				'tax' => 'Z',
+    				'unit_price' => $ship
     			);
     		}
     		$items = $tmp;
