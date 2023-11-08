@@ -4,13 +4,13 @@
   Plugin Name: WooCommerce Konto Checkout plugin
   Plugin URI: http://wcplugin.konto.is/
   Description: Extends WooCommerce with Konto Checkout plugin.
-  Version: 1.1.0
+  Version: 1.4.0
   Author: Konto
   Author URI: https://konto.is/
  */
 define( 'KONTO_DIR', plugin_dir_path( __FILE__ ) );
 define( 'KONTO_URL', plugin_dir_url( __FILE__ ) );
-define( 'KONTO_VERSION', '1.1.0' );
+define( 'KONTO_VERSION', '1.4.0' );
  
 add_action('plugins_loaded', 'woocommerce_konto_gateway_init', 0);
 function woocommerce_konto_gateway_init() {
@@ -41,6 +41,12 @@ function woocommerce_konto_gateway_init() {
 			'label' => __('Kennitala', 'woocommerce'),
 			'placeholder' => _x('Kennitala', 'placeholder', 'woocommerce'),
 			'required' => true,
+			'clear' => true,
+			'label_class' => array('billing_ssn'),
+		 );
+		 $fields['billing']['billing_konto_send_xml'] = array(
+			'type' => 'checkbox',
+			'label' => __('Send invoice as XML', 'woocommerce'),
 			'clear' => true,
 			'label_class' => array('billing_ssn'),
 		 );
@@ -84,7 +90,7 @@ function woocommerce_konto_gateway_init() {
 	}
 	
 	function add_action_to_order( $actions, $order ) {
-		if ( $order->has_status( array('processing' ) ) && $order->payment_method != 'konto' && !empty($order->billing_ssn)) {
+		if ( $order->has_status( array('processing' ) ) && $order->payment_method != 'konto') {
 			$invoice = get_post_meta($order->id,'konto_invoice',true);
 			if (!$invoice)
 			{
@@ -101,17 +107,29 @@ function woocommerce_konto_gateway_init() {
 				
 				if ($check)
 				{
-					$actions['name'] = array(
+					$actions['konto'] = array(
 						'url'  => admin_url( 'admin-ajax.php?action=create_invoice&order_id=' . $order->id ),
-						'name' => 'Konto',
+						'name' => 'Import order to Konto, issue and send invoice',
+						'action' =>'konto',
+					);
+					$actions['konto_draft'] = array(
+						'url'  => admin_url( 'admin-ajax.php?action=create_draft_invoice&order_id=' . $order->id ),
+						'name' => 'Import order to Konto as a saved invoice',
+						'action' =>'konto_draft',
 					);
 				}
 				else
 				{
 					$actions['konto'] = array(
 						'url'  => admin_url( 'admin-ajax.php?action=create_invoice&order_id=' . $order->id ),
-						'name' => 'Konto',
-						'action'    => "action complete"
+						'name' => 'Import order to Konto, issue and send invoice',
+						'action' =>'konto',
+					);
+
+					$actions['konto_draft'] = array(
+						'url'  => admin_url( 'admin-ajax.php?action=create_draft_invoice&order_id=' . $order->id ),
+						'name' => 'Import order to Konto as a saved invoice',
+						'action' =>'konto_draft',
 					);
 				}
 			}
@@ -123,19 +141,52 @@ function woocommerce_konto_gateway_init() {
 		$order  = wc_get_order( absint( $_GET['order_id'] ) );
 		
 		if ( $order ) {
-			if ( $order->has_status( array('processing' ) ) && $order->payment_method != 'konto' && !empty($order->billing_ssn)) {
-				$gateway = new WC_Gateway_Konto();
-				try {
-					$result = $gateway->process_payment($_GET['order_id'],0,true,true);
-					
-					update_post_meta($_GET['order_id'],'konto_invoice',$result['result']);
-				}
-				catch (Exception $e)
+			if ( $order->has_status( array('processing' ) ) && $order->payment_method != 'konto') {
+				$invoice = get_post_meta($order->id,'konto_invoice',true);
+				if (! $invoice)
 				{
-					if(!session_id()) {
-						session_start();
+					$gateway = new WC_Gateway_Konto();
+					try {
+						$result = $gateway->process_payment($_GET['order_id'],0,true,true);
+						
+						update_post_meta($_GET['order_id'],'konto_invoice',$result['result']);
 					}
-					$_SESSION['konto_error_message'] = $e->getMessage();
+					catch (Exception $e)
+					{
+						if(!session_id()) {
+							session_start();
+						}
+						$_SESSION['konto_error_message'] = $e->getMessage();
+					}
+				}
+			}
+		}
+		
+		wp_safe_redirect( wp_get_referer() ? wp_get_referer() : admin_url( 'edit.php?post_type=shop_order' ) );
+		exit;
+	}
+
+	function create_draft_invoice() {
+		$order  = wc_get_order( absint( $_GET['order_id'] ) );
+		
+		if ( $order ) {
+			if ( $order->has_status( array('processing' ) ) && $order->payment_method != 'konto') {
+				$invoice = get_post_meta($order->id,'konto_invoice',true);
+				if (! $invoice)
+				{
+					$gateway = new WC_Gateway_Konto();
+					try {
+						$result = $gateway->process_payment($_GET['order_id'],0,true,true, true);
+						
+						update_post_meta($_GET['order_id'],'konto_invoice',$result['result']);
+					}
+					catch (Exception $e)
+					{
+						if(!session_id()) {
+							session_start();
+						}
+						$_SESSION['konto_error_message'] = $e->getMessage();
+					}
 				}
 			}
 		}
@@ -148,22 +199,22 @@ function woocommerce_konto_gateway_init() {
 		if(!session_id()) {
 			session_start();
 		}
-		
 		if (isset($_SESSION['konto_error_message'])):
 		?>
 	    <div class="notice notice-error">
-	        <p><?php echo WC()->session->get('konto_error_message'); ?></p>
+	        <p><?php echo $_SESSION['konto_error_message'] ?></p>
 	    </div>
 	    <?php
 	    unset($_SESSION['konto_error_message']);
 	    endif;
 	}
 	
-	$settings = get_settings('woocommerce_konto_settings',null);
-	if ($settings['enabled'] == 'yes')
+	$settings = get_option('woocommerce_konto_settings',null);
+	if ($settings && $settings['enabled'] == 'yes')
 	{
 		add_filter( 'woocommerce_admin_order_actions', 'add_action_to_order',10,2);	
 		add_action( 'wp_ajax_create_invoice', 'create_invoice' );
+		add_action( 'wp_ajax_create_draft_invoice', 'create_draft_invoice' );
 		
 		add_action( 'admin_notices', 'konto_admin_notice_error' );
 	}
@@ -235,7 +286,7 @@ function woocommerce_konto_gateway_init() {
             return true;
         }
     	
-    	public function process_payment( $order_id ,$is_claim = true, $is_mark_paid = false, $is_return= false) {   		
+    	public function process_payment( $order_id ,$is_claim = true, $is_mark_paid = false, $is_return= false, $is_draft = false) {   		
     		$order = new WC_Order( $order_id );
     		
     		$url = 'https://konto.is';
@@ -298,12 +349,15 @@ function woocommerce_konto_gateway_init() {
     			);
     		}
     		$items = $tmp;
-    		
+			$trading_partner_id = '';
+    		if ($order->billing_konto_send_xml && $order->billing_ssn) {
+				$trading_partner_id = $order->billing_ssn;
+			}
     		$invoice_data = array(
     			'amount' => $order->get_total(),
     			'currency' => $order->get_currency(),
     			'customer' => array(
-    				'output_select' => 3,
+    				'output_select' => $trading_partner_id ? 2 : 3,
     				'email' => $order->billing_email,
     				'name' => $order->billing_first_name.' '.$order->billing_last_name,
     				'address' => $order->billing_address_1.' '.$order->billing_address_2,
@@ -314,15 +368,20 @@ function woocommerce_konto_gateway_init() {
     				'currency' =>$order->get_currency(),
     				'lang' => 'is',
     				'due_date' => 5,
-    				'final_date' => 7
+    				'final_date' => 7,
+					'trading_partner_id' => $trading_partner_id
     			),
     			'settlement_date' => date('Y-m-d',strtotime('+7 days')),
     			'due_date' => date('Y-m-d',strtotime('+5 days')),
     			'issue_date' => date('Y-m-d'),
     			'type' => 'invoice',
     			'is_claim' => $is_claim,
+    			'default_payment_fee' => true,
     			'items' => $items,
-    			'mark_paid' => $is_mark_paid
+    			'mark_paid' => $is_mark_paid,
+				'customer_default' => $order->billing_ssn ? false : true,
+				'cost_provide' => $order->get_order_number(),
+				'save' => $is_draft,
     		);
     		self::log("Start create invoice");
     		self::log(array_merge(array('username' => $this->_username,'api_key' => $this->_api_key),$invoice_data));
@@ -334,6 +393,7 @@ function woocommerce_konto_gateway_init() {
     		
     		$response = wp_remote_post( $url.'/api/v1/create-invoice', array(
 	    		'method' => 'POST',
+				'sslverify' => false,
 	    		'timeout' => 45,
 	    		'redirection' => 5,
 	    		'httpversion' => '1.0',
@@ -433,5 +493,11 @@ function woocommerce_konto_gateway_init() {
     	}
     }
 	
+	
+	function action_admin_head() {
+        echo '<style>.wc-action-button-konto::after { content: "\f170" !important; }</style>';
+		echo '<style>.wc-action-button-konto_draft::after { content: "\f137" !important; }</style>';
+    }
+    add_action( 'admin_head', 'action_admin_head' );
 	
 }
